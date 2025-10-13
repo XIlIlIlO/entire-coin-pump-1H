@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>SUPERHERO Spike — 1h (All Futures)</title>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root { --scale: 0.65; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background-color: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Helvetica, Arial, Apple SD Gothic Neo, Noto Sans KR, "맑은 고딕", sans-serif;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+    body {
+      transform: scale(var(--scale));
+      transform-origin: top left;
+      width: calc(100% / var(--scale));
+      height: calc(100% / var(--scale));
+      padding: calc(40px / var(--scale));
+    }
+
+    h1 { font-size: 26px; font-weight: 800; margin: 0 0 6px 0; }
+    .sub { color:#bbb; font-size:14px; margin: 0 0 16px 0; line-height: 1.4; }
+    #time { margin-bottom: 16px; font-size: 15px; color: #cccccc; }
+    #countdown { margin-left: 12px; color: #888; }
+
+    .legend {
+      display: flex; gap: 16px; align-items: center; font-size: 12px; color:#ccc; margin-bottom: 8px;
+    }
+    .dot { width:10px; height:10px; border-radius: 50%; display:inline-block; margin-right:6px; }
+    .dot.green { background:#00ff88; }
+    .dot.red   { background:#ff3366; }
+    .note { color:#888; font-size:12px; margin-bottom: 8px; }
+
+    a.link { color:#8ad8ff; text-decoration: none; }
+    a.link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>■ SUPERHERO — 1시간 급등 랭킹 (전종목) ■</h1>
+  <div class="sub">
+    기준식: <strong>((현재가 − 최근 60분 저가) / 최근 60분 저가) × 100%</strong> &nbsp;|&nbsp;
+    데이터: Binance USDT Perpetual 1분봉 × 60개 (1분 갱신)
+  </div>
+
+  <div class="legend">
+    <div><span class="dot green"></span>spike 강함</div>
+    <div><span class="dot red"></span>spike 약함 (range 대비)</div>
+    <div class="note">라벨 클릭 시 바이낸스 선물 차트로 이동</div>
+  </div>
+
+  <div id="time">
+    UTC 시간 로딩 중... <span id="countdown">다음 갱신까지 60s</span>
+  </div>
+
+  <svg id="chart" width="1100" height="1300" aria-label="spike ranking chart"></svg>
+
+  <script>
+    // 🔗 API 엔드포인트 (Railway)
+    const API_URL = "https://binance-flask-app-production.up.railway.app/top_spike_1h_all";
+
+    // ───────────────── 레이아웃 파라미터 ─────────────────
+    const rowHeight     = 46;
+    const barHeight     = 26;
+    const barY          = 0;
+    const labelY        = barHeight / 2;
+    const barStartX     = 230;   // 메인 막대 시작 X
+    const barMaxWidth   = 580;   // 메인 막대 최대 폭
+
+    const subBarHeight  = 8;     // 거래대금 보조 막대
+    const subBarY       = barHeight + 6;
+    const subBarMaxW    = 520;
+
+    const leftPadding   = 50;    // 왼쪽 여백(랭크/심볼 등)
+    const symbolX       = 60;    // 심볼 텍스트 X
+
+    const svg = d3.select("#chart");
+    let previousDataMap = new Map();   // 랭크 변화 추적
+    let secondsToNextUpdate = 60;
+
+    // ───────────────── 유틸 ─────────────────
+    function formatCompact(num) {
+      if (!isFinite(num)) return "0";
+      if (num >= 1e12) return (num / 1e12).toFixed(2) + "T";
+      if (num >= 1e9)  return (num / 1e9 ).toFixed(2) + "B";
+      if (num >= 1e6)  return (num / 1e6 ).toFixed(2) + "M";
+      if (num >= 1e3)  return (num / 1e3 ).toFixed(2) + "K";
+      return (num || 0).toFixed(0);
+    }
+    function getColorHex(name) { return name === "green" ? "#00ff88" : "#ff3366"; }
+
+    function updateTimeLabel() {
+      const now = new Date();
+      const y = now.getUTCFullYear();
+      const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(now.getUTCDate()).padStart(2, '0');
+      const h = String(now.getUTCHours()).padStart(2, '0');
+      const mm = String(now.getUTCMinutes()).padStart(2, '0');
+      document.getElementById("time").childNodes[0].textContent = `${y}-${m}-${d} ${h}:${mm} UTC`;
+    }
+
+    function startCountdown() {
+      setInterval(() => {
+        secondsToNextUpdate--;
+        if (secondsToNextUpdate <= 0) secondsToNextUpdate = 60;
+        document.getElementById("countdown").textContent = `다음 갱신까지 ${secondsToNextUpdate}s`;
+      }, 1000);
+    }
+
+    async function fetchData() {
+      try {
+        const res = await fetch(API_URL, { cache: "no-store" });
+        const json = await res.json();
+        // 이 엔드포인트는 {last_updated_unix, count, data:[...]} 형식
+        return Array.isArray(json?.data) ? json.data : [];
+      } catch (e) {
+        console.error("fetch error:", e);
+        return [];
+      }
+    }
+
+    async function updateChart() {
+      updateTimeLabel();
+      secondsToNextUpdate = 60;
+
+      const data = await fetchData();
+      if (!data || data.length === 0) return;
+
+      // 안전 보정
+      data.forEach(d => {
+        d.spike_pct = Math.max(0, +d.spike_pct || 0);
+        d.volume_usdt_1h = Math.max(0, +d.volume_usdt_1h || 0);
+      });
+
+      // 혹시 정렬 깨졌을 경우 대비
+      data.sort((a,b) => b.spike_pct - a.spike_pct);
+
+      const maxSpike = d3.max(data, d => d.spike_pct);
+      const maxTurn  = d3.max(data, d => d.volume_usdt_1h);
+      svg.attr("height", data.length * rowHeight + 50);
+
+      const rows = svg.selectAll("g.row").data(data, d => d.symbol);
+
+      // ── Enter ──
+      const enter = rows.enter()
+        .append("g")
+        .attr("class", "row")
+        .attr("transform", (d, i) => `translate(${leftPadding}, ${i * rowHeight})`);
+
+      // NEW/등락
+      enter.append("text")
+        .attr("class", "rank-change")
+        .attr("x", 0)
+        .attr("y", labelY)
+        .attr("dy", ".35em")
+        .attr("text-anchor", "start")
+        .style("font-size", "14px")
+        .style("opacity", 0)
+        .attr("fill", "white");
+
+      // 심볼
+      enter.append("text")
+        .attr("class", "label")
+        .attr("x", symbolX)
+        .attr("y", labelY)
+        .attr("dy", ".35em")
+        .attr("text-anchor", "start")
+        .attr("fill", "white")
+        .style("font-weight", "700")
+        .style("cursor", "pointer")
+        .style("opacity", 0)
+        .on("click", function (event, d) {
+          const url = `https://www.binance.com/en/futures/${d.symbol}`;
+          window.open(url, "_blank");
+        });
+
+      // 메인 막대 (spike %)
+      enter.append("rect")
+        .attr("class", "bar-main")
+        .attr("x", barStartX)
+        .attr("y", barY)
+        .attr("height", barHeight)
+        .attr("fill", "#00ff88")
+        .attr("width", 0);
+
+      // 메인 값 라벨
+      enter.append("text")
+        .attr("class", "val-main")
+        .attr("x", barStartX + 10)
+        .attr("y", labelY)
+        .attr("dy", ".35em")
+        .attr("fill", "white")
+        .style("opacity", 0);
+
+      // 거래대금 보조 막대
+      enter.append("rect")
+        .attr("class", "bar-sub")
+        .attr("x", barStartX)
+        .attr("y", subBarY)
+        .attr("height", subBarHeight)
+        .attr("fill", "#ffffff")
+        .attr("opacity", 1)
+        .attr("width", 0);
+
+      // 거래대금 라벨
+      enter.append("text")
+        .attr("class", "val-sub")
+        .attr("x", barStartX + 10)
+        .attr("y", subBarY + subBarHeight / 2)
+        .attr("dy", ".35em")
+        .attr("fill", "#cccccc")
+        .style("font-size", "12px")
+        .style("opacity", 0);
+
+      // ── Update+Enter merge ──
+      const merged = enter.merge(rows);
+      merged.transition().duration(900)
+        .attr("transform", (d, i) => `translate(${leftPadding}, ${i * rowHeight})`);
+
+      merged.each(function(d, i) {
+        const g = d3.select(this);
+
+        const spike = d.spike_pct;
+        const turn  = d.volume_usdt_1h;
+
+        const wMain = maxSpike > 0 ? (spike / maxSpike) * barMaxWidth : 0;
+        const wSub  = maxTurn  > 0 ? (turn  / maxTurn ) * subBarMaxW : 0;
+
+        // 메인 막대
+        g.select("rect.bar-main")
+          .transition().duration(900)
+          .attr("width", wMain)
+          .attr("fill", getColorHex(d.color));
+
+        // 메인 값
+        g.select("text.val-main")
+          .transition().duration(900)
+          .style("opacity", 1)
+          .tween("text", function() {
+            const prev = previousDataMap.get(d.symbol);
+            const start = prev ? (prev.spike_pct || 0) : 0;
+            const iNum = d3.interpolateNumber(start, spike);
+            return function(t) { this.textContent = `${iNum(t).toFixed(2)}%`; };
+          })
+          .attr("x", barStartX + Math.max(10, wMain + 10))
+          .attr("text-anchor", "start");
+
+        // 심볼
+        g.select("text.label")
+          .text(" " + d.symbol)
+          .transition().duration(900)
+          .style("opacity", 1);
+
+        // 거래대금 막대
+        g.select("rect.bar-sub")
+          .transition().duration(900)
+          .attr("width", wSub);
+
+        // 거래대금 라벨
+        g.select("text.val-sub")
+          .text(`${formatCompact(turn)} USDT`)
+          .transition().duration(900)
+          .style("opacity", 1)
+          .attr("x", barStartX + Math.max(10, wSub + 10))
+          .attr("text-anchor", "start");
+
+        // 등락 표기
+        const prev = previousDataMap.get(d.symbol);
+        const rankText = g.select("text.rank-change");
+        if (!prev) {
+          rankText.text("NEW").attr("fill", "white");
+        } else {
+          const diff = prev.rank - i;
+          if (diff === 0) {
+            rankText.text("=").attr("fill", "#cccccc");
+          } else {
+            const arrow = diff > 0 ? "▲" : "▼";
+            const color = diff > 0 ? "#00ff88" : "#ff3366";
+            rankText.text(`${arrow}${Math.abs(diff)}`).attr("fill", color);
+          }
+        }
+        rankText.transition().duration(900).style("opacity", 1);
+      });
+
+      // ── Exit ──
+      rows.exit().remove();
+
+      // 랭크 스냅샷 갱신
+      previousDataMap.clear();
+      data.forEach((d, i) => previousDataMap.set(d.symbol, { ...d, rank: i }));
+    }
+
+    updateChart();
+    setInterval(updateChart, 60 * 1000);
+    startCountdown();
+
+    // 모바일 대응: 화면 크기에 따라 scale 자동 조정(선택)
+    const mq = window.matchMedia("(max-width: 768px)");
+    function applyScale() {
+      document.documentElement.style.setProperty("--scale", mq.matches ? "0.52" : "0.65");
+    }
+    applyScale();
+    mq.addEventListener("change", applyScale);
+  </script>
+</body>
+</html>

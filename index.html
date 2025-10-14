@@ -72,11 +72,11 @@
     const barY          = 0;
     const labelY        = barHeight / 2;
     const barStartX     = 230;   // 메인 막대 시작 X
-    const barMaxWidth   = 580;   // 메인 막대 최대 폭
+    const barMaxWidth   = 520;   // 메인 막대 최대 폭
 
     const subBarHeight  = 8;     // 거래대금 보조 막대
     const subBarY       = barHeight + 6;
-    const subBarMaxW    = 520;
+    const subBarMaxW    = 500;
 
     const leftPadding   = 50;    // 왼쪽 여백(랭크/심볼 등)
     const symbolX       = 60;    // 심볼 텍스트 X
@@ -302,12 +302,7 @@
     startCountdown();
 
     // 모바일 대응: 화면 크기에 따라 scale 자동 조정(선택)
-    const mq = window.matchMedia("(max-width: 768px)");
-    function applyScale() {
-      document.documentElement.style.setProperty("--scale", mq.matches ? "0.52" : "0.65");
-    }
-    applyScale();
-    mq.addEventListener("change", applyScale);
+    
   </script>
 </body>
 </html>
